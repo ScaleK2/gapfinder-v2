@@ -55,7 +55,7 @@ npx playwright install
 Install Python dependencies:
 
 ```bash
-pip install python-docx reportlab pandas openpyxl
+pip install python-docx reportlab pandas openpyxl docx2pdf
 ```
 
 ---
