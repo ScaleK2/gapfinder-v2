@@ -21,9 +21,9 @@ It generates a structured DOCX + PDF client report.
 ## 🛠 Requirements
 
 - Git
-- Node.js (LTS)
+- Node.js (LTS - not current; https://nodejs.org/en/download)
 - Python 3.10+
-- npm
+- npm (included in node.js)
 
 Verify:
 
