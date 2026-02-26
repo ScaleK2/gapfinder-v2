@@ -74,17 +74,19 @@ set PAGESPEED_API_KEY=your_key_here
 ### Mac
 ```bash
 export PSI_API_KEY=your_key_here
-set PAGESPEED_API_KEY=your_key_here
+OR
+export PAGESPEED_API_KEY=your_key_here
 ```
 
 Restart terminal after setting.
 
 To check if the API key has been set in the session try
+
 ```powershell
 echo %PAGESPEED_API_KEY%
 OR
 echo %PSI_API_KEY%
-
+```
 ---
 
 ## ▶ Running the Pipeline
