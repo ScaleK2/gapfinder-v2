@@ -223,6 +223,7 @@ function build(domain) {
     },
     categoryWeights: CATEGORIES,
     categories: scored,
+    categoryScores: Object.fromEntries(Object.entries(scored).map(([k, v]) => [k, v.capped_score])),
     overallScore: +overall.toFixed(2),
     criticalIssues: issues,
     focusFirst: issues.slice(0, 3).map((x) => ({ code: x.code, recommendation: x.recommendation })),
