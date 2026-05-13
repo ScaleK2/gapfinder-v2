@@ -45,7 +45,10 @@ run("node", ["scripts/phase1-tag-inventory.js", domain, ...(hasForce ? ["--force
 // 4) fetch PSI (writes data/<domain>/analysis/psi.json)
 run("node", ["scripts/psi-fetch.js", domain]);
 
-// 5) generate DOCX + PDF
+// 5) scorecard generation (commercial signal scoring)
+run("node", ["scripts/score-gapfinder.js", domain]);
+
+// 6) generate DOCX + PDF
 run("python", ["scripts/generate-gapfinder-docx-v2.py", domain]);
 
 console.log("\n[OK] GapFinder run complete.\n");
