@@ -109,6 +109,12 @@ Outputs are stored in:
 data/{domain}/
 ```
 
+Key analysis outputs include:
+- `analysis/phase1_inventory.xlsx`
+- `analysis/unknown_vendors.csv`
+- `analysis/psi.json`
+- `analysis/scorecard.json`
+
 ---
 
 ## 🧠 Architecture
@@ -118,8 +124,9 @@ data/{domain}/
 3. Extract tags & events  
 4. Analyse payload completeness  
 5. Run PSI  
-6. Generate DOCX  
-7. Export PDF  
+6. Score commercial signal quality (scorecard.json)  
+7. Generate DOCX  
+8. Export PDF  
 
 ---
 

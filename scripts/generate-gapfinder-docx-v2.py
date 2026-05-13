@@ -681,6 +681,40 @@ def build_top_issues(score_info):
     return bullet_lines(score_info.get("top_issues", []))
 
 
+def status_from_overall(score):
+    if score is None:
+        return "Not scored"
+    if score < 40:
+        return "At Risk"
+    if score < 60:
+        return "Underperforming"
+    if score < 80:
+        return "Strong"
+    return "Optimised"
+
+
+def score_info_from_scorecard(scorecard):
+    categories = (scorecard or {}).get("categories", {})
+    issues = (scorecard or {}).get("criticalIssues", [])
+
+    def c(name):
+        return round(float(categories.get(name, {}).get("capped_score", 0)), 1)
+
+    top_issues = [i.get("recommendation") or i.get("code") for i in issues[:4] if isinstance(i, dict)]
+    overall = (scorecard or {}).get("overallScore")
+
+    return {
+        "overall_score": round(float(overall), 1) if overall is not None else 0.0,
+        "status": status_from_overall(overall),
+        "tracking_score": c("tracking_foundation"),
+        "event_score": c("event_signal_integrity"),
+        "payload_score": c("ecommerce_signal_quality"),
+        "performance_score": c("performance_friction"),
+        "attribution_score": c("platform_signal_alignment"),
+        "top_issues": top_issues or ["No major structural issues detected from this scan."],
+    }
+
+
 def _replace_in_paragraph(paragraph, mapping: dict):
     if not paragraph.runs:
         return
@@ -741,6 +775,7 @@ def main(domain_input: str):
     xlsx_path = os.path.join(analysis_dir, "phase1_inventory.xlsx")
     unknown_path = os.path.join(analysis_dir, "unknown_vendors.csv")
     psi_path = os.path.join(analysis_dir, "psi.json")
+    scorecard_path = os.path.join(analysis_dir, "scorecard.json")
 
     if not os.path.exists(xlsx_path):
         raise FileNotFoundError(f"Missing workbook: {xlsx_path}")
@@ -755,8 +790,9 @@ def main(domain_input: str):
     privacy_info = extract_privacy_summary(wb)
     unknown_count, unknown_top = read_unknown_hosts(unknown_path, top_n=10)
     psi = read_json_if_exists(psi_path)
+    scorecard = read_json_if_exists(scorecard_path)
 
-    score_info = score_gapfinder(vendor_info, event_info, psi)
+    score_info = score_info_from_scorecard(scorecard) if scorecard else score_gapfinder(vendor_info, event_info, psi)
 
     mapping = {
         "website": domain,
