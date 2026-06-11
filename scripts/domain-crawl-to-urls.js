@@ -26,15 +26,20 @@
  *   node scripts/domain-crawl-to-urls.js https://example.com
  *   node scripts/domain-crawl-to-urls.js https://example.com --probe
  *   node scripts/domain-crawl-to-urls.js https://example.com --force
+ *   node scripts/domain-crawl-to-urls.js https://example.com/au --scope-mode=soft
+ *   node scripts/domain-crawl-to-urls.js https://example.com/au --scope-strict
  */
 
 const fs = require("fs");
 const path = require("path");
 const { chromium } = require("playwright");
 const zlib = require("zlib");
+const { cleanScopePath, getFlagValue, loadDotEnv, parseAuditInput, parseScopeOptions } = require("./audit-utils");
 
 const ROOT = path.resolve(__dirname, "..");
 const DATA_DIR = path.join(ROOT, "data");
+
+loadDotEnv(ROOT);
 
 const MAX_CATEGORIES = 3;
 const MAX_PRODUCTS = 3;
@@ -118,10 +123,6 @@ function writeJson(filePath, obj) {
   fs.writeFileSync(filePath, JSON.stringify(obj, null, 2) + "\n", "utf8");
 }
 
-function domainKey(url) {
-  return new URL(url).hostname.replace(/^www\./, "");
-}
-
 function normaliseUrl(raw, origin) {
   try {
     const u = new URL(raw, origin);
@@ -142,6 +143,46 @@ function normaliseUrl(raw, origin) {
   } catch {
     return null;
   }
+}
+
+function isWithinScope(rawUrl, scopePath) {
+  const scope = cleanScopePath(scopePath);
+  if (!scope) return true;
+
+  try {
+    const p = new URL(rawUrl).pathname.replace(/\/+$/g, "") || "/";
+    return p === scope || p.startsWith(`${scope}/`);
+  } catch {
+    return false;
+  }
+}
+
+function scopedPathCandidates(scopePath, paths, includeGlobalFallbacks) {
+  const scope = cleanScopePath(scopePath);
+  const out = [];
+
+  for (const p of paths) {
+    const cleanPath = p.startsWith("/") ? p : `/${p}`;
+    if (scope) out.push(`${scope}${cleanPath}`);
+    if (!scope || includeGlobalFallbacks) out.push(cleanPath);
+  }
+
+  return [...new Set(out)];
+}
+
+function normaliseManualUrl(raw, origin) {
+  if (!raw) return null;
+  return normaliseUrl(raw, origin);
+}
+
+function manualTargetsFromArgs(args, origin) {
+  return {
+    home: normaliseManualUrl(getFlagValue(args, "--home"), origin),
+    category: normaliseManualUrl(getFlagValue(args, "--category"), origin),
+    pdp: normaliseManualUrl(getFlagValue(args, "--pdp"), origin),
+    privacy: normaliseManualUrl(getFlagValue(args, "--privacy"), origin),
+    blog: normaliseManualUrl(getFlagValue(args, "--blog"), origin),
+  };
 }
 
 function withQueryParams(rawUrl, params) {
@@ -287,21 +328,22 @@ async function discoverUrlsFromSitemaps(origin) {
 }
 
 async function crawlPageLinks(url, origin) {
-  const browser = await chromium.launch({ headless: true });
-  const page = await browser.newPage({ userAgent: USER_AGENT });
+  let browser = null;
   const urls = new Set();
 
   try {
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage({ userAgent: USER_AGENT });
     await page.goto(url, { timeout: 35_000, waitUntil: "domcontentloaded" });
     const links = await page.$$eval("a[href]", (as) => as.map((a) => a.getAttribute("href")));
     for (const h of links) {
       const n = normaliseUrl(h, origin);
       if (n) urls.add(n);
     }
-  } catch {
-    // ignore
+  } catch (e) {
+    console.warn(`[WARN] Could not crawl links from ${url}: ${e?.message || e}`);
   } finally {
-    await browser.close();
+    if (browser) await browser.close();
   }
 
   return [...urls].sort();
@@ -380,9 +422,10 @@ async function probePaths(origin, paths) {
   return [...new Set(found)].sort();
 }
 
-async function pickOnePrivacyUrl(origin) {
-  const found = await probePaths(origin, PRIVACY_CANDIDATES);
-  for (const candidate of PRIVACY_CANDIDATES) {
+async function pickOnePrivacyUrl(origin, scopePath = "", includeGlobalFallbacks = true) {
+  const candidates = scopedPathCandidates(scopePath, PRIVACY_CANDIDATES, includeGlobalFallbacks);
+  const found = await probePaths(origin, candidates);
+  for (const candidate of candidates) {
     const full = normaliseUrl(new URL(candidate, origin).toString(), origin);
     if (full && found.includes(full)) return full;
   }
@@ -400,25 +443,27 @@ async function tryHtmlSitemapFallback(origin) {
 
 (async () => {
   const input = process.argv[2];
-  const probe = process.argv.includes("--probe");
-  const force = process.argv.includes("--force");
+  const args = process.argv.slice(3);
+  const probe = args.includes("--probe");
+  const force = args.includes("--force");
+  const scopeOptions = parseScopeOptions(args);
 
   if (!input) {
-    console.error("Usage: node scripts/domain-crawl-to-urls.js <domain or url> [--probe] [--force]");
+    console.error("Usage: node scripts/domain-crawl-to-urls.js <domain or url> [--probe] [--force] [--scope-path /au] [--scope-mode soft|strict] [--global] [--category <url>] [--pdp <url>]");
     process.exit(1);
   }
 
-  // allow passing bare domain (e.g. example.com)
-  let origin = "";
-  try {
-    const raw = /^https?:\/\//i.test(input) ? input : `https://${input}`;
-    origin = new URL(raw).origin;
-  } catch {
+  const audit = parseAuditInput(input, scopeOptions);
+  if (!audit) {
     console.error("Invalid domain/url:", input);
     process.exit(1);
   }
 
-  const domain = domainKey(origin);
+  const origin = audit.origin;
+  const scopePath = audit.scopePath;
+  const scopeMode = audit.scopeMode;
+  const domain = audit.auditKey;
+  const manualTargets = manualTargetsFromArgs(args, origin);
 
   const domainDir = path.join(DATA_DIR, domain);
   ensureDir(domainDir);
@@ -429,40 +474,56 @@ async function tryHtmlSitemapFallback(origin) {
   const outputFile = path.join(domainDir, probe ? "urls_probe.txt" : "urls.txt");
   const probeTargetsFile = path.join(analysisDir, "probe_targets.json");
 
-  console.log(`\n[GapFinder] MVDS URL set for ${origin}${probe ? " (probe mode)" : ""}`);
+  console.log(`\n[GapFinder] MVDS URL set for ${audit.homeUrl}${probe ? " (probe mode)" : ""}`);
+  if (scopePath) console.log(`[Scope]   ${scopePath} (${scopeMode}) -> data/${domain}`);
   console.log(`[Output]  ${outputFile}\n`);
 
   // 1) XML sitemaps via robots/common paths
   let urls = await discoverUrlsFromSitemaps(origin);
 
-  // 2) HTML sitemap fallback if XML gave nothing
+  if (scopePath) {
+    const scopedUrls = urls.filter((u) => isWithinScope(u, scopePath));
+    if (scopedUrls.length) urls = scopedUrls;
+  }
+
+  // 2) HTML sitemap fallback if XML gave nothing inside the requested scope
   if (!urls.length) {
     const htmlLinks = await tryHtmlSitemapFallback(origin);
-    if (htmlLinks.length) urls = htmlLinks;
+    const scopedHtmlLinks = scopePath ? htmlLinks.filter((u) => isWithinScope(u, scopePath)) : htmlLinks;
+    if (scopedHtmlLinks.length) urls = scopedHtmlLinks;
   }
 
-  // 3) Fallback to homepage crawl
+  // 3) Fallback to scoped homepage crawl
   if (!urls.length) {
     console.log("[Fallback] No sitemap URLs found. Crawling homepage links...\n");
-    urls = await crawlHomepage(origin);
+    urls = await crawlPageLinks(audit.homeUrl, origin);
+    if (scopePath) urls = urls.filter((u) => isWithinScope(u, scopePath));
   }
 
-  const t = pickTemplates(urls, origin);
-  const critical = await probePaths(origin, CRITICAL_PATHS);
-  const privacy = await pickOnePrivacyUrl(origin);
+  const t = pickTemplates(urls, audit.homeUrl);
+  const allowGlobalFallbacks = scopeMode !== "strict";
+  const critical = await probePaths(origin, scopedPathCandidates(scopePath, CRITICAL_PATHS, allowGlobalFallbacks));
+  const privacy = await pickOnePrivacyUrl(origin, scopePath, allowGlobalFallbacks);
+
+  const homeUrl = manualTargets.home || t.homepage;
+  const categoryUrls = [manualTargets.category, ...t.categories].filter(Boolean);
+  const productUrls = [manualTargets.pdp, ...t.products].filter(Boolean);
+  const privacyUrl = manualTargets.privacy || privacy;
+  const blogUrl = manualTargets.blog || t.blog;
 
   const finalUrls = [
-    t.homepage,
-    ...t.categories,
-    ...t.products,
+    homeUrl,
+    ...categoryUrls.slice(0, MAX_CATEGORIES),
+    ...productUrls.slice(0, MAX_PRODUCTS),
     ...critical,
-    privacy,
-    t.blog
+    privacyUrl,
+    blogUrl
   ].filter(Boolean);
 
   // ---- Probe target persistence (homepage + 1 PDP) ----
   const existingTargets = !force ? readJsonIfExists(probeTargetsFile) : null;
-  const candidatePdp = t.products[0] || null;
+  const candidatePdp = productUrls[0] || null;
+  const candidateCategory = categoryUrls[0] || null;
 
   let probeTargets = existingTargets && typeof existingTargets === "object" ? existingTargets : null;
   const isValidExisting =
@@ -472,16 +533,36 @@ async function tryHtmlSitemapFallback(origin) {
 
   if (!isValidExisting) {
     probeTargets = {
-      home: t.homepage,
-      pdp: candidatePdp
+      home: homeUrl,
+      pdp: candidatePdp,
+      category: candidateCategory,
+      scope: {
+        input: audit.input,
+        origin,
+        host: audit.host,
+        scopePath,
+        scopeMode,
+        auditKey: domain,
+      }
     };
   } else {
     // backfill pdp if missing and we can infer one
     if ((!probeTargets.pdp || typeof probeTargets.pdp !== "string") && candidatePdp) {
       probeTargets.pdp = candidatePdp;
     }
-    // keep home aligned to origin
-    probeTargets.home = t.homepage;
+    if ((!probeTargets.category || typeof probeTargets.category !== "string") && candidateCategory) {
+      probeTargets.category = candidateCategory;
+    }
+    // keep home and scope metadata aligned to the current input
+    probeTargets.home = homeUrl;
+    probeTargets.scope = {
+      input: audit.input,
+      origin,
+      host: audit.host,
+      scopePath,
+      scopeMode,
+      auditKey: domain,
+    };
   }
 
   writeJson(probeTargetsFile, probeTargets);
@@ -499,10 +580,10 @@ async function tryHtmlSitemapFallback(origin) {
   fs.writeFileSync(outputFile, outUrls.join("\n") + "\n", "utf8");
 
   const confidence =
-    (t.categories.length > 0 ? 1 : 0) +
-    (t.products.length > 0 ? 1 : 0) +
-    (critical.some(u => new URL(u).pathname === "/checkout") ? 1 : 0) +
-    (critical.some(u => new URL(u).pathname === "/cart") ? 1 : 0);
+    (categoryUrls.length > 0 ? 1 : 0) +
+    (productUrls.length > 0 ? 1 : 0) +
+    (critical.some(u => new URL(u).pathname.endsWith("/checkout") || new URL(u).pathname === "/checkout") ? 1 : 0) +
+    (critical.some(u => new URL(u).pathname.endsWith("/cart") || new URL(u).pathname === "/cart") ? 1 : 0);
 
   console.log(`[Done] Wrote ${outUrls.length} URLs`);
   console.log(`[Probe Targets] ${probeTargetsFile}`);
@@ -511,10 +592,10 @@ async function tryHtmlSitemapFallback(origin) {
   }
   console.log(`[Confidence] ${confidence}/4 (categories/products/cart/checkout)\n`);
 
-  if (!t.categories.length || !t.products.length) {
+  if (!categoryUrls.length || !productUrls.length) {
     console.log("!! Low confidence template detection.");
-    if (!t.categories.length) console.log("   - No category/collection-like URLs detected.");
-    if (!t.products.length) console.log("   - No product-like URLs detected.");
+    if (!categoryUrls.length) console.log("   - No category/collection-like URLs detected.");
+    if (!productUrls.length) console.log("   - No product-like URLs detected.");
     console.log("   Likely causes: sitemap missing/blocked, JS-only routing, unusual URL patterns.");
     console.log("   Next move: provide 1 known product URL and 1 known category URL (manual override) OR we add a targeted pattern.\n");
   }

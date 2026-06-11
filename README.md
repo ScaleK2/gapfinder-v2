@@ -62,42 +62,66 @@ pip install python-docx reportlab pandas openpyxl docx2pdf
 
 ## 🔑 Environment Setup
 
-Set PSI API key:
+Preferred: create a local `.env` file from the example template:
 
-### Windows
-```powershell
-setx PSI_API_KEY "your_key_here"
-OR
-set PAGESPEED_API_KEY=your_key_here
+```bash
+cp .env.example .env
 ```
 
-### Mac
+Then edit `.env` and set:
+
+```env
+PAGESPEED_API_KEY=your_key_here
+```
+
+`PSI_API_KEY` is also supported as a fallback name. You can still export the key in your shell if you prefer:
+
 ```bash
-export PSI_API_KEY=your_key_here
-OR
 export PAGESPEED_API_KEY=your_key_here
 ```
 
-Restart terminal after setting.
-
-To check if the API key has been set in the session try
+On Windows PowerShell:
 
 ```powershell
-echo %PAGESPEED_API_KEY%
-OR
-echo %PSI_API_KEY%
+setx PAGESPEED_API_KEY "your_key_here"
 ```
 ---
 
 ## ▶ Running the Pipeline
 
-Homepage only (default):
+Interactive menu (recommended):
+
+```bash
+node run.js
+```
+
+Homepage-only PSI / standard audit:
 
 ```bash
 node scripts/run-gapfinder.js https://example.com
 ```
 
-Full crawl mode:
+Region-scoped audit for stores that live under a path such as `/au`:
+
+```bash
+node scripts/run-gapfinder.js https://www.anker.com/au/ --scope-mode=soft
+```
+
+Use strict scope if you want to block global fallback pages such as `/privacy-policy`, `/cart`, or `/checkout`:
+
+```bash
+node scripts/run-gapfinder.js https://www.anker.com/au/ --scope-strict
+```
+
+If sitemap discovery cannot find the right regional templates, provide known URLs manually:
+
+```bash
+node scripts/run-gapfinder.js https://www.anker.com/au/ \
+  --category https://www.anker.com/au/collections/charging \
+  --pdp https://www.anker.com/au/products/example-product
+```
+
+Full PSI mode (home + category + PDP where detected):
 
 ```bash
 node scripts/run-gapfinder.js https://example.com --full
@@ -109,11 +133,18 @@ Outputs are stored in:
 data/{domain}/
 ```
 
+For region-scoped audits, the path is included in the audit key to avoid overwriting another region. For example, `https://www.anker.com/au/` writes to:
+
+```
+data/anker.com__au/
+```
+
 Key analysis outputs include:
 - `analysis/phase1_inventory.xlsx`
 - `analysis/unknown_vendors.csv`
 - `analysis/psi.json`
 - `analysis/scorecard.json`
+- `analysis/probe_targets.json` (includes scope metadata when a region path is used)
 
 ---
 
