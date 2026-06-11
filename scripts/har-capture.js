@@ -23,9 +23,12 @@ const fs = require("fs");
 const path = require("path");
 const { chromium } = require("playwright");
 const { URL } = require("url");
+const { loadDotEnv, parseAuditInput, parseScopeOptions } = require("./audit-utils");
 
 const ROOT = path.resolve(__dirname, "..");
 const DATA_DIR = path.join(ROOT, "data");
+
+loadDotEnv(ROOT);
 
 const PAGE_TIMEOUT_MS = 35_000;
 const NETWORK_IDLE_MS = 1_200;
@@ -35,19 +38,6 @@ const USER_AGENT =
 
 function ensureDir(dir) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-}
-
-function normaliseInputUrl(input) {
-  try {
-    if (!/^https?:\/\//i.test(input)) input = `https://${input}`;
-    return new URL(input);
-  } catch {
-    return null;
-  }
-}
-
-function domainKey(urlObj) {
-  return urlObj.hostname.replace(/^www\./, "");
 }
 
 function safeStatMtimeMs(filePath) {
@@ -73,22 +63,23 @@ function slugFromUrl(rawUrl) {
 
 (async () => {
   const rawInput = process.argv[2];
-  const probe = process.argv.includes("--probe");
-  const force = process.argv.includes("--force");
+  const args = process.argv.slice(3);
+  const probe = args.includes("--probe");
+  const force = args.includes("--force");
+  const audit = parseAuditInput(rawInput, parseScopeOptions(args));
 
   if (!rawInput) {
-    console.error("Usage: node scripts/har-capture.js <domain or url> [--probe] [--force]");
+    console.error("Usage: node scripts/har-capture.js <domain or url> [--probe] [--force] [--scope-path /au] [--global]");
     process.exit(1);
   }
 
-  const inputUrl = normaliseInputUrl(rawInput);
-  if (!inputUrl) {
+  if (!audit) {
     console.error("Invalid domain or URL provided.");
     process.exit(1);
   }
 
-  const origin = inputUrl.origin;
-  const domain = domainKey(inputUrl);
+  const origin = audit.homeUrl;
+  const domain = audit.auditKey;
 
   const domainDir = path.join(DATA_DIR, domain);
 
@@ -117,6 +108,7 @@ function slugFromUrl(rawUrl) {
   const urlsFileMtime = safeStatMtimeMs(urlsFile);
 
   console.log(`\n[HAR] Capturing ${urls.length} pages for ${origin}${probe ? " (probe mode)" : ""}`);
+  if (audit.scopePath) console.log(`[Scope]  ${audit.scopePath} (${audit.scopeMode}) -> data/${domain}`);
   console.log(`[Input]  ${urlsFile}`);
   console.log(`[Output] ${harDir}`);
   if (probe) {

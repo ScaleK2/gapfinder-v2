@@ -28,23 +28,19 @@
 const fs = require("fs");
 const path = require("path");
 const { URL } = require("url");
+const { loadDotEnv, parseAuditInput, parseScopeOptions } = require("./audit-utils");
 
 const ROOT = path.resolve(__dirname, "..");
 const DATA_DIR = path.join(ROOT, "data");
+
+loadDotEnv(ROOT);
 
 function ensureDir(dir) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
-function normaliseInputToDomain(input) {
-  if (!input) return null;
-  try {
-    if (!/^https?:\/\//i.test(input)) input = `https://${input}`;
-    const u = new URL(input);
-    return u.hostname.replace(/^www\./, "");
-  } catch {
-    return null;
-  }
+function normaliseInputToAudit(input, args = []) {
+  return parseAuditInput(input, parseScopeOptions(args));
 }
 
 function readJsonIfExists(p) {
@@ -175,17 +171,19 @@ async function fetchPsi(url, strategy, apiKey) {
 
 (async () => {
   const input = process.argv[2];
-  const domain = normaliseInputToDomain(input);
-  const full = process.argv.includes("--full");
+  const args = process.argv.slice(3);
+  const audit = normaliseInputToAudit(input, args);
+  const full = args.includes("--full");
 
-  if (!domain) {
-    console.error("Usage: node scripts/psi-fetch.js <domain or url> [--full]");
+  if (!audit) {
+    console.error("Usage: node scripts/psi-fetch.js <domain or url> [--full] [--scope-path /au] [--global]");
     process.exit(1);
   }
 
-  const apiKey = process.env.PAGESPEED_API_KEY;
+  const domain = audit.auditKey;
+  const apiKey = process.env.PAGESPEED_API_KEY || process.env.PSI_API_KEY;
   if (!apiKey) {
-    console.error("Missing env var: PAGESPEED_API_KEY");
+    console.error("Missing env var: PAGESPEED_API_KEY (or PSI_API_KEY). Add it to .env or export it in your shell.");
     process.exit(1);
   }
 
@@ -203,6 +201,14 @@ async function fetchPsi(url, strategy, apiKey) {
 
   const out = {
     domain,
+    scope: {
+      input: audit.input,
+      origin: audit.origin,
+      host: audit.host,
+      scopePath: audit.scopePath,
+      scopeMode: audit.scopeMode,
+      auditKey: audit.auditKey,
+    },
     mode: full ? "full" : "home-only",
     generatedAt: new Date().toISOString(),
     targets: {},

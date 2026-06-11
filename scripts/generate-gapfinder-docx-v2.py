@@ -21,11 +21,51 @@ DATA_DIR = os.path.join(ROOT, "data")
 TEMPLATE_PATH = os.path.join(ROOT, "templates", "gapfinder_readiness_template.docx")
 
 
-def normalise_domain(inp: str) -> str:
+def clean_scope_path(pathname: str) -> str:
+    p = (pathname or "/").strip()
+    if not p.startswith("/"):
+        p = f"/{p}"
+    p = re.sub(r"/+$", "", p)
+    return "" if p in ("", "/") else p
+
+
+def audit_key_from_input(inp: str, args=None) -> str:
+    args = args or []
     inp = (inp or "").strip()
-    inp = re.sub(r"^https?://", "", inp, flags=re.I)
-    inp = inp.split("/")[0]
-    return inp.replace("www.", "")
+    if not inp:
+        return ""
+
+    raw = inp if re.match(r"^https?://", inp, flags=re.I) else f"https://{inp}"
+
+    from urllib.parse import urlparse
+    parsed = urlparse(raw)
+    host = re.sub(r"^www\.", "", parsed.hostname or "", flags=re.I)
+
+    explicit_scope = None
+    global_mode = "--global" in args or "--scope-mode=global" in args or "--scope-mode=none" in args
+    for i, arg in enumerate(args):
+        if arg.startswith("--scope-path="):
+            explicit_scope = arg.split("=", 1)[1]
+        elif arg == "--scope-path" and i + 1 < len(args):
+            explicit_scope = args[i + 1]
+
+    scope = "" if global_mode else clean_scope_path(parsed.path)
+    if explicit_scope is not None:
+        scope = clean_scope_path(explicit_scope)
+
+    if not scope:
+        return host
+
+    suffix = "__".join(
+        re.sub(r"[^a-zA-Z0-9._-]+", "-", part).strip("-")
+        for part in scope.strip("/").split("/")
+        if part
+    )
+    return f"{host}__{suffix}" if suffix else host
+
+
+def safe_report_name(domain: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9._-]+", "_", domain)
 
 
 def safe_sheet(wb, names):
@@ -765,8 +805,8 @@ def replace_placeholders_in_doc(doc: Document, mapping: dict):
                     _replace_in_cell(cell, mapping)
 
 
-def main(domain_input: str):
-    domain = normalise_domain(domain_input)
+def main(domain_input: str, args=None):
+    domain = audit_key_from_input(domain_input, args or [])
 
     if not os.path.exists(TEMPLATE_PATH):
         raise FileNotFoundError(f"Template not found: {TEMPLATE_PATH}")
@@ -866,7 +906,7 @@ def main(domain_input: str):
     report_dir = os.path.join(DATA_DIR, domain, "report")
     os.makedirs(report_dir, exist_ok=True)
 
-    out_docx = os.path.join(report_dir, f"GapFinder_Readiness_{domain}.docx")
+    out_docx = os.path.join(report_dir, f"GapFinder_Readiness_{safe_report_name(domain)}.docx")
     doc.save(out_docx)
 
     out_pdf = os.path.splitext(out_docx)[0] + ".pdf"
@@ -891,4 +931,4 @@ if __name__ == "__main__":
         print("Usage: python scripts/generate-gapfinder-docx.py <domain>")
         raise SystemExit(1)
 
-    main(sys.argv[1])
+    main(sys.argv[1], sys.argv[2:])

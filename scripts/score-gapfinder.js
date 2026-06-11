@@ -18,9 +18,12 @@
 const fs = require("fs");
 const path = require("path");
 const XLSX = require("xlsx");
+const { loadDotEnv, parseAuditInput, parseScopeOptions } = require("./audit-utils");
 
 const ROOT = path.resolve(__dirname, "..");
 const DATA_DIR = path.join(ROOT, "data");
+
+loadDotEnv(ROOT);
 
 const CATEGORIES = {
   tracking_foundation: { weight: 15 },
@@ -31,14 +34,9 @@ const CATEGORIES = {
   performance_friction: { weight: 10 },
 };
 
-function normaliseInputToDomain(input) {
-  if (!input) return null;
-  try {
-    if (!/^https?:\/\//i.test(input)) input = `https://${input}`;
-    return new URL(input).hostname.replace(/^www\./, "");
-  } catch {
-    return null;
-  }
+function normaliseInputToDomain(input, args = []) {
+  const audit = parseAuditInput(input, parseScopeOptions(args));
+  return audit ? audit.auditKey : null;
 }
 
 function readXlsxRows(file, sheetName) {
@@ -236,7 +234,7 @@ function build(domain) {
 
 (function main() {
   const arg = process.argv[2];
-  const domain = normaliseInputToDomain(arg);
+  const domain = normaliseInputToDomain(arg, process.argv.slice(3));
   if (!domain) {
     console.error("Usage: node scripts/score-gapfinder.js <domain or url>");
     process.exit(1);
