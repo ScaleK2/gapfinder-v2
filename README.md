@@ -55,49 +55,79 @@ npx playwright install
 Install Python dependencies:
 
 ```bash
-pip install python-docx reportlab pandas openpyxl docx2pdf
+pip install python-docx reportlab pandas openpyxl
+```
+
+Optional PDF export uses `docx2pdf` and Microsoft Word:
+
+```bash
+pip install docx2pdf
 ```
 
 ---
 
 ## 🔑 Environment Setup
 
-Set PSI API key:
+Preferred: create a local `.env` file from the example template:
 
-### Windows
-```powershell
-setx PSI_API_KEY "your_key_here"
-OR
-set PAGESPEED_API_KEY=your_key_here
+```bash
+cp .env.example .env
 ```
 
-### Mac
+Then edit `.env` and set:
+
+```env
+PAGESPEED_API_KEY=your_key_here
+```
+
+`PSI_API_KEY` is also supported as a fallback name. You can still export the key in your shell if you prefer:
+
 ```bash
-export PSI_API_KEY=your_key_here
-OR
 export PAGESPEED_API_KEY=your_key_here
 ```
 
-Restart terminal after setting.
-
-To check if the API key has been set in the session try
+On Windows PowerShell:
 
 ```powershell
-echo %PAGESPEED_API_KEY%
-OR
-echo %PSI_API_KEY%
+setx PAGESPEED_API_KEY "your_key_here"
 ```
 ---
 
 ## ▶ Running the Pipeline
 
-Homepage only (default):
+Interactive menu (recommended):
+
+```bash
+node run.js
+```
+
+Homepage-only PSI / standard audit:
 
 ```bash
 node scripts/run-gapfinder.js https://example.com
 ```
 
-Full crawl mode:
+Region-scoped audit for stores that live under a path such as `/au`:
+
+```bash
+node scripts/run-gapfinder.js https://www.anker.com/au/ --scope-mode=soft
+```
+
+Use strict scope if you want to block global fallback pages such as `/privacy-policy`, `/cart`, or `/checkout`:
+
+```bash
+node scripts/run-gapfinder.js https://www.anker.com/au/ --scope-strict
+```
+
+If sitemap discovery cannot find the right regional templates, provide known URLs manually:
+
+```bash
+node scripts/run-gapfinder.js https://www.anker.com/au/ \
+  --category https://www.anker.com/au/collections/charging \
+  --pdp https://www.anker.com/au/products/example-product
+```
+
+Full PSI mode (home + category + PDP where detected):
 
 ```bash
 node scripts/run-gapfinder.js https://example.com --full
@@ -109,11 +139,47 @@ Outputs are stored in:
 data/{domain}/
 ```
 
+For region-scoped audits, the path is included in the audit key to avoid overwriting another region. For example, `https://www.anker.com/au/` writes to:
+
+```
+data/anker.com__au/
+```
+
 Key analysis outputs include:
 - `analysis/phase1_inventory.xlsx`
 - `analysis/unknown_vendors.csv`
 - `analysis/psi.json`
 - `analysis/scorecard.json`
+- `analysis/probe_targets.json` (includes scope metadata when a region path is used)
+
+
+### Report generation notes
+
+DOCX generation is the primary report output. PDF export is best-effort because `docx2pdf` depends on Microsoft Word on macOS/Windows. If Word is not installed, not allowed by macOS Automation permissions, or the DOCX is open, GapFinder now leaves the DOCX in place and continues instead of failing the whole run.
+
+To skip PDF export explicitly:
+
+```bash
+node scripts/run-gapfinder.js https://example.com --no-pdf
+```
+
+Or via `.env`:
+
+```env
+GAPFINDER_EXPORT_PDF=false
+```
+
+If the branded template is missing, GapFinder creates a fallback DOCX report so the audit still completes. Restore `templates/gapfinder_readiness_template.docx` for branded output.
+
+### HAR capture notes
+
+HAR capture uses GapFinder's manual network-event writer rather than Playwright's native `recordHar` close step. This avoids a common browser-context close hang on pages with long-running requests, service workers, or large embedded response bodies while preserving the request URL/query/post-data fields needed by the Phase 1 inventory.
+
+Optional timing overrides:
+
+```bash
+GAPFINDER_PAGE_TIMEOUT_MS=45000 GAPFINDER_NETWORK_IDLE_MS=2000 node scripts/run-gapfinder.js https://example.com
+```
 
 ---
 

@@ -1,7 +1,7 @@
 """
 generate-gapfinder-docx.py
 
-Fills a DOCX template using Phase 1 outputs, then exports a PDF via Microsoft Word (docx2pdf).
+Fills a DOCX template using Phase 1 outputs, then optionally exports a PDF via Microsoft Word (docx2pdf).
 """
 
 import os
@@ -13,7 +13,7 @@ from collections import Counter, defaultdict
 
 from openpyxl import load_workbook
 from docx import Document
-from docx2pdf import convert
+import importlib.util
 
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -21,11 +21,77 @@ DATA_DIR = os.path.join(ROOT, "data")
 TEMPLATE_PATH = os.path.join(ROOT, "templates", "gapfinder_readiness_template.docx")
 
 
-def normalise_domain(inp: str) -> str:
+def load_dotenv(root_dir: str):
+    env_path = os.path.join(root_dir, ".env")
+    if not os.path.exists(env_path):
+        return
+
+    with open(env_path, "r", encoding="utf-8") as f:
+        for line in f:
+            raw = line.strip()
+            if not raw or raw.startswith("#") or "=" not in raw:
+                continue
+
+            key, value = raw.split("=", 1)
+            key = key.strip()
+            if not key or key in os.environ:
+                continue
+
+            value = value.strip()
+            if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
+                value = value[1:-1]
+
+            os.environ[key] = value
+
+
+load_dotenv(ROOT)
+
+
+def clean_scope_path(pathname: str) -> str:
+    p = (pathname or "/").strip()
+    if not p.startswith("/"):
+        p = f"/{p}"
+    p = re.sub(r"/+$", "", p)
+    return "" if p in ("", "/") else p
+
+
+def audit_key_from_input(inp: str, args=None) -> str:
+    args = args or []
     inp = (inp or "").strip()
-    inp = re.sub(r"^https?://", "", inp, flags=re.I)
-    inp = inp.split("/")[0]
-    return inp.replace("www.", "")
+    if not inp:
+        return ""
+
+    raw = inp if re.match(r"^https?://", inp, flags=re.I) else f"https://{inp}"
+
+    from urllib.parse import urlparse
+    parsed = urlparse(raw)
+    host = re.sub(r"^www\.", "", parsed.hostname or "", flags=re.I)
+
+    explicit_scope = None
+    global_mode = "--global" in args or "--scope-mode=global" in args or "--scope-mode=none" in args
+    for i, arg in enumerate(args):
+        if arg.startswith("--scope-path="):
+            explicit_scope = arg.split("=", 1)[1]
+        elif arg == "--scope-path" and i + 1 < len(args):
+            explicit_scope = args[i + 1]
+
+    scope = "" if global_mode else clean_scope_path(parsed.path)
+    if explicit_scope is not None:
+        scope = clean_scope_path(explicit_scope)
+
+    if not scope:
+        return host
+
+    suffix = "__".join(
+        re.sub(r"[^a-zA-Z0-9._-]+", "-", part).strip("-")
+        for part in scope.strip("/").split("/")
+        if part
+    )
+    return f"{host}__{suffix}" if suffix else host
+
+
+def safe_report_name(domain: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9._-]+", "_", domain)
 
 
 def safe_sheet(wb, names):
@@ -765,11 +831,131 @@ def replace_placeholders_in_doc(doc: Document, mapping: dict):
                     _replace_in_cell(cell, mapping)
 
 
-def main(domain_input: str):
-    domain = normalise_domain(domain_input)
 
-    if not os.path.exists(TEMPLATE_PATH):
-        raise FileNotFoundError(f"Template not found: {TEMPLATE_PATH}")
+def pdf_requested(args=None) -> bool:
+    args = args or []
+    if "--no-pdf" in args:
+        return False
+    if "--pdf" in args:
+        return True
+
+    v = os.environ.get("GAPFINDER_EXPORT_PDF", "").strip().lower()
+    if v in {"0", "false", "no", "off", "skip"}:
+        return False
+    if v in {"1", "true", "yes", "on"}:
+        return True
+
+    return True
+
+
+def pdf_required(args=None) -> bool:
+    args = args or []
+    if "--require-pdf" in args:
+        return True
+
+    v = os.environ.get("GAPFINDER_REQUIRE_PDF", "").strip().lower()
+    return v in {"1", "true", "yes", "on"}
+
+
+def docx2pdf_available() -> bool:
+    return importlib.util.find_spec("docx2pdf") is not None
+
+
+def export_pdf_if_requested(out_docx: str, out_pdf: str, args=None):
+    if not pdf_requested(args):
+        print("[Skip] PDF export disabled (--no-pdf or GAPFINDER_EXPORT_PDF=false).")
+        return False
+
+    if not docx2pdf_available():
+        msg = "docx2pdf is not installed. DOCX report was created; skipping PDF export."
+        if pdf_required(args):
+            raise RuntimeError(msg)
+        print(f"[WARN] {msg}")
+        return False
+
+    from docx2pdf import convert
+
+    try:
+        convert(out_docx, out_pdf)
+        return True
+    except Exception as e:
+        msg = (
+            "DOCX report was created, but PDF conversion failed. "
+            "On macOS, docx2pdf requires Microsoft Word and may fail if Word is missing, "
+            "not permitted by macOS Automation permissions, or the document is open. "
+            "Use --no-pdf or GAPFINDER_EXPORT_PDF=false to skip PDF export.\n"
+            f"Details: {e}"
+        )
+        if pdf_required(args):
+            raise RuntimeError(msg)
+        print(f"[WARN] {msg}")
+        return False
+
+
+def add_paragraphs(doc: Document, lines):
+    for line in lines:
+        if not str(line).strip():
+            doc.add_paragraph("")
+        elif str(line).startswith("# "):
+            doc.add_heading(str(line)[2:], level=1)
+        elif str(line).startswith("## "):
+            doc.add_heading(str(line)[3:], level=2)
+        else:
+            doc.add_paragraph(str(line))
+
+
+def build_fallback_doc(mapping: dict) -> Document:
+    doc = Document()
+    doc.add_heading("GapFinder Readiness Report", level=0)
+    add_paragraphs(doc, [
+        f"Website: {mapping.get('website', 'N/A')}",
+        f"Generated: {mapping.get('GeneratedAt', 'N/A')}",
+        "",
+        "## Scorecard",
+        f"Overall score: {mapping.get('GapFinderScore', 'N/A')}",
+        f"Status: {mapping.get('GapFinderStatus', 'N/A')}",
+        f"Tracking foundation: {mapping.get('TrackingFoundationScore', 'N/A')}",
+        f"Event visibility: {mapping.get('EventVisibilityScore', 'N/A')}",
+        f"Payload quality: {mapping.get('PayloadQualityScore', 'N/A')}",
+        f"Performance: {mapping.get('PerformanceScore', 'N/A')}",
+        f"Attribution readiness: {mapping.get('AttributionReadinessScore', 'N/A')}",
+        "",
+        "## Top Issues",
+        mapping.get("TopIssues", "None observed"),
+        "",
+        "## Tracking Coverage",
+        mapping.get("CoverageSummary", "N/A"),
+        "",
+        "## Vendors by Function",
+        mapping.get("ToolsByFunction", "N/A"),
+        "",
+        "## Journey Signals",
+        mapping.get("JourneySignals", "N/A"),
+        "",
+        "## Payload Completeness",
+        mapping.get("PayloadCompleteness", "N/A"),
+        "",
+        "## Privacy & Consent",
+        mapping.get("PrivacyConsentSummary", "N/A"),
+        "",
+        "## Unknown Vendors",
+        mapping.get("UnknownSummary", "N/A"),
+    ])
+    return doc
+
+
+def load_report_document(mapping: dict) -> Document:
+    if os.path.exists(TEMPLATE_PATH):
+        doc = Document(TEMPLATE_PATH)
+        replace_placeholders_in_doc(doc, mapping)
+        return doc
+
+    print(f"[WARN] Template not found: {TEMPLATE_PATH}")
+    print("[WARN] Creating a fallback DOCX report instead. Restore templates/gapfinder_readiness_template.docx for branded output.")
+    return build_fallback_doc(mapping)
+
+def main(domain_input: str, args=None):
+    domain = audit_key_from_input(domain_input, args or [])
 
     analysis_dir = os.path.join(DATA_DIR, domain, "analysis")
     xlsx_path = os.path.join(analysis_dir, "phase1_inventory.xlsx")
@@ -860,35 +1046,30 @@ def main(domain_input: str):
     if psi:
         apply_psi(mapping, psi)
 
-    doc = Document(TEMPLATE_PATH)
-    replace_placeholders_in_doc(doc, mapping)
+    doc = load_report_document(mapping)
 
     report_dir = os.path.join(DATA_DIR, domain, "report")
     os.makedirs(report_dir, exist_ok=True)
 
-    out_docx = os.path.join(report_dir, f"GapFinder_Readiness_{domain}.docx")
+    out_docx = os.path.join(report_dir, f"GapFinder_Readiness_{safe_report_name(domain)}.docx")
     doc.save(out_docx)
 
     out_pdf = os.path.splitext(out_docx)[0] + ".pdf"
 
-    try:
-        convert(out_docx, out_pdf)
-    except Exception as e:
-        raise RuntimeError(
-            "DOCX saved, but PDF conversion failed. "
-            "Make sure Microsoft Word is installed and the DOCX is not open.\n"
-            f"Details: {e}"
-        )
+    pdf_created = export_pdf_if_requested(out_docx, out_pdf, args or [])
 
     print(f"[OK] Wrote DOCX: {out_docx}")
-    print(f"[OK] Wrote PDF:  {out_pdf}")
+    if pdf_created:
+        print(f"[OK] Wrote PDF:  {out_pdf}")
+    else:
+        print("[OK] PDF export skipped or unavailable; DOCX report is ready.")
 
 
 if __name__ == "__main__":
     import sys
 
     if len(sys.argv) < 2:
-        print("Usage: python scripts/generate-gapfinder-docx.py <domain>")
+        print("Usage: python scripts/generate-gapfinder-docx-v2.py <domain> [--no-pdf] [--require-pdf]")
         raise SystemExit(1)
 
-    main(sys.argv[1])
+    main(sys.argv[1], sys.argv[2:])

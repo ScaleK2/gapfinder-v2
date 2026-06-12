@@ -14,9 +14,12 @@ const fs = require("fs");
 const path = require("path");
 const { URL } = require("url");
 const XLSX = require("xlsx");
+const { loadDotEnv, parseAuditInput, parseScopeOptions } = require("./audit-utils");
 
 const ROOT = path.resolve(__dirname, "..");
 const DATA_DIR = path.join(ROOT, "data");
+
+loadDotEnv(ROOT);
 
 const UTM_KEYS = ["utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term"];
 const CLICK_ID_KEYS = ["gclid", "gbraid", "wbraid", "fbclid", "ttclid"];
@@ -25,15 +28,9 @@ function ensureDir(dir) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
-function normaliseInputToDomain(input) {
-  if (!input) return null;
-  try {
-    if (!/^https?:\/\//i.test(input)) input = `https://${input}`;
-    const u = new URL(input);
-    return u.hostname.replace(/^www\./, "");
-  } catch {
-    return null;
-  }
+function normaliseInputToDomain(input, args = []) {
+  const audit = parseAuditInput(input, parseScopeOptions(args));
+  return audit ? audit.auditKey : null;
 }
 
 function hostOf(u) {
@@ -1251,7 +1248,7 @@ function writeUnknownCsv(filePath, rows) {
   const probe = process.argv.includes("--probe");
   const force = process.argv.includes("--force");
 
-  const domain = normaliseInputToDomain(arg);
+  const domain = normaliseInputToDomain(arg, process.argv.slice(3));
 
   if (!domain) {
     console.error("Usage: node scripts/phase1-tag-inventory.js <domain or url> [--probe] [--force]");
