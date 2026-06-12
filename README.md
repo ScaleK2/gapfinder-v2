@@ -55,7 +55,13 @@ npx playwright install
 Install Python dependencies:
 
 ```bash
-pip install python-docx reportlab pandas openpyxl docx2pdf
+pip install python-docx reportlab pandas openpyxl
+```
+
+Optional PDF export uses `docx2pdf` and Microsoft Word:
+
+```bash
+pip install docx2pdf
 ```
 
 ---
@@ -145,6 +151,35 @@ Key analysis outputs include:
 - `analysis/psi.json`
 - `analysis/scorecard.json`
 - `analysis/probe_targets.json` (includes scope metadata when a region path is used)
+
+
+### Report generation notes
+
+DOCX generation is the primary report output. PDF export is best-effort because `docx2pdf` depends on Microsoft Word on macOS/Windows. If Word is not installed, not allowed by macOS Automation permissions, or the DOCX is open, GapFinder now leaves the DOCX in place and continues instead of failing the whole run.
+
+To skip PDF export explicitly:
+
+```bash
+node scripts/run-gapfinder.js https://example.com --no-pdf
+```
+
+Or via `.env`:
+
+```env
+GAPFINDER_EXPORT_PDF=false
+```
+
+If the branded template is missing, GapFinder creates a fallback DOCX report so the audit still completes. Restore `templates/gapfinder_readiness_template.docx` for branded output.
+
+### HAR capture notes
+
+HAR capture uses GapFinder's manual network-event writer rather than Playwright's native `recordHar` close step. This avoids a common browser-context close hang on pages with long-running requests, service workers, or large embedded response bodies while preserving the request URL/query/post-data fields needed by the Phase 1 inventory.
+
+Optional timing overrides:
+
+```bash
+GAPFINDER_PAGE_TIMEOUT_MS=45000 GAPFINDER_NETWORK_IDLE_MS=2000 node scripts/run-gapfinder.js https://example.com
+```
 
 ---
 

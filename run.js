@@ -101,6 +101,9 @@ async function main() {
     if (yes(probe)) args.push("--probe");
   }
 
+  const pdf = await ask("Try PDF export after DOCX is created? [Y/n]: ");
+  if (pdf && !yes(pdf)) args.push("--no-pdf");
+
   if (choice !== "5") {
     const force = await ask("Force recapture/rebuild? [y/N]: ");
     if (yes(force)) args.push("--force");

@@ -28,6 +28,15 @@ function run(cmd, args) {
   if (res.status !== 0) process.exit(res.status || 1);
 }
 
+function findPython() {
+  for (const cmd of ["python3", "python"]) {
+    const res = spawnSync(cmd, ["--version"], { cwd: ROOT, shell: true, stdio: "ignore" });
+    if (res.status === 0) return cmd;
+  }
+  console.error("Unable to find python3 or python on PATH. Install Python 3.10+ and try again.");
+  process.exit(1);
+}
+
 function passthroughArgs(flags) {
   const pass = [];
   for (let i = 0; i < flags.length; i++) {
@@ -41,7 +50,9 @@ function passthroughArgs(flags) {
       flag.startsWith("--category=") ||
       flag.startsWith("--pdp=") ||
       flag.startsWith("--privacy=") ||
-      flag.startsWith("--blog=")
+      flag.startsWith("--blog=") ||
+      flag === "--no-pdf" ||
+      flag === "--require-pdf"
     ) {
       pass.push(flag);
       continue;
@@ -57,7 +68,7 @@ function passthroughArgs(flags) {
 
 const domain = process.argv[2];
 if (!domain) {
-  console.error("Usage: node scripts/run-gapfinder.js <domain-or-url> [--probe] [--force] [--full] [--scope-path /au] [--scope-mode soft|strict] [--global]");
+  console.error("Usage: node scripts/run-gapfinder.js <domain-or-url> [--probe] [--force] [--full] [--scope-path /au] [--scope-mode soft|strict] [--global] [--no-pdf]");
   process.exit(1);
 }
 
@@ -66,6 +77,7 @@ const hasProbe = flags.includes("--probe");
 const hasForce = flags.includes("--force");
 const hasFull = flags.includes("--full");
 const passthrough = passthroughArgs(flags);
+const pythonCmd = findPython();
 
 // 1) crawl URLs
 run("node", ["scripts/domain-crawl-to-urls.js", domain, ...(hasProbe ? ["--probe"] : []), ...(hasForce ? ["--force"] : []), ...passthrough]);
@@ -83,6 +95,6 @@ run("node", ["scripts/psi-fetch.js", domain, ...(hasFull ? ["--full"] : []), ...
 run("node", ["scripts/score-gapfinder.js", domain, ...passthrough]);
 
 // 6) generate DOCX + PDF
-run("python", ["scripts/generate-gapfinder-docx-v2.py", domain, ...passthrough]);
+run(pythonCmd, ["scripts/generate-gapfinder-docx-v2.py", domain, ...passthrough]);
 
 console.log("\n[OK] GapFinder run complete.\n");
